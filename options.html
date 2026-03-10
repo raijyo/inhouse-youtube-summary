@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Summary - 設定</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>⚙️ YouTube Summary 設定</h1>
+      <p class="subtitle">生成AIエンドポイントの設定を行ってください</p>
+    </header>
+
+    <form id="settings-form">
+      <div class="form-group">
+        <label for="api-key">🔑 OpenAI Compatible API Key</label>
+        <input type="password" id="api-key" placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxx">
+        <p class="hint">例: <code>sk-xxxxxxxxxxxxxxxxxxxxxxx</code></p>
+        <button type="button" id="toggle-key" class="btn btn-small">表示</button>
+      </div>
+
+      <div class="form-group">
+        <label for="endpoint-url">🌐 EndPoint URL</label>
+        <input type="url" id="endpoint-url" placeholder="http://10.10.10.123:xxxx/gaipf/v1">
+        <p class="hint">例: <code>http://10.10.10.123:xxxx/gaipf/v1</code></p>
+      </div>
+
+      <div class="form-group">
+        <label for="model-name">🤖 利用するモデル</label>
+        <input type="text" id="model-name" placeholder="gpt-5-nano">
+        <p class="hint">例: <code>gpt-5-nano</code></p>
+      </div>
+
+      <div class="button-row">
+        <button type="submit" class="btn btn-primary">💾 設定を保存</button>
+        <button type="button" id="test-btn" class="btn btn-test">🔌 疎通テスト</button>
+      </div>
+    </form>
+
+    <div id="save-status" class="status-msg hidden"></div>
+
+    <div id="test-area" class="test-area hidden">
+      <h2>🔌 疎通テスト結果</h2>
+      <div id="test-result" class="test-result"></div>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

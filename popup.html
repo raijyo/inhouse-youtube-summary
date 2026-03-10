@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📺 YouTube Summary</h1>
+    </header>
+
+    <div id="not-youtube" class="message hidden">
+      <p>⚠️ YouTube動画のページで使用してください</p>
+    </div>
+
+    <div id="no-config" class="message hidden">
+      <p>⚙️ まずAPIの設定を行ってください</p>
+      <button id="open-options" class="btn btn-primary">設定を開く</button>
+    </div>
+
+    <div id="main-area" class="hidden">
+      <div id="video-info">
+        <div id="video-title" class="video-title"></div>
+      </div>
+
+      <button id="summarize-btn" class="btn btn-primary btn-large">
+        ✨ サマリーを生成する
+      </button>
+
+      <div id="status-area" class="hidden">
+        <div id="status-icon" class="status-icon"></div>
+        <div id="status-text" class="status-text"></div>
+        <div id="progress-bar" class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+      </div>
+
+      <div id="summary-area" class="hidden">
+        <div class="summary-header">
+          <h2>📝 サマリー</h2>
+          <button id="copy-summary" class="btn btn-icon" title="Markdownをコピー">
+            📋 コピー
+          </button>
+        </div>
+        <div id="summary-content" class="markdown-body"></div>
+      </div>
+
+      <details id="log-area" class="log-section">
+        <summary class="log-toggle">🔍 ログを表示 <span id="log-count" class="log-count hidden">0</span></summary>
+        <div class="log-header">
+          <button id="copy-logs" class="btn btn-small">📋 ログをコピー</button>
+          <button id="clear-logs" class="btn btn-small">🗑️ クリア</button>
+        </div>
+        <div id="log-content" class="log-content"></div>
+      </details>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="lib/marked.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
