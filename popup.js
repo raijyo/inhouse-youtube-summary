@@ -142,22 +142,31 @@ async function startSummarize(tab, config) {
 
     let transcript;
     try {
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'getTranscript' });
+      // Execute extraction script directly in the tab (no message passing)
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content.js'],
+      });
+
+      const response = results?.[0]?.result;
+      if (!response) {
+        addLog('content script から応答がありません', 'error');
+        throw new Error('スクリプト実行に失敗しました。ページをリロードしてから再度お試しください。');
+      }
 
       // Show debug logs from content script
-      if (response && response.logs && response.logs.length > 0) {
+      if (response.logs && response.logs.length > 0) {
         response.logs.forEach(msg => addLog(`[content] ${msg}`));
       }
 
-      if (response && response.error) {
+      if (response.error) {
         addLog(`文字起こし取得エラー: ${response.error}`, 'error');
         throw new Error(response.error);
       }
       transcript = response.transcript;
       addLog(`文字起こし取得成功 (${transcript.length} 文字)`, 'success');
     } catch (err) {
-      if (err.message && !err.message.includes('Could not establish connection')) {
-        // Re-throw content script errors as-is
+      if (err.message && !err.message.includes('スクリプト実行に失敗')) {
         throw err;
       }
       addLog(`文字起こし取得エラー: ${err.message}`, 'error');
