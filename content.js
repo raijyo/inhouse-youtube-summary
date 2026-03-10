@@ -3,103 +3,167 @@
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'getTranscript') {
     extractTranscript()
-      .then(transcript => sendResponse({ transcript }))
-      .catch(err => sendResponse({ error: err.message }));
+      .then(result => sendResponse(result))
+      .catch(err => sendResponse({ error: err.message, transcript: '', logs: [] }));
     return true; // async response
   }
 });
 
 async function extractTranscript() {
+  const debugLogs = [];
+  const log = (msg) => debugLogs.push(msg);
+
   const params = new URLSearchParams(window.location.search);
   const videoId = params.get('v');
   if (!videoId) {
-    throw new Error('動画IDが見つかりません');
+    return { error: '動画IDが見つかりません', transcript: '', logs: debugLogs };
   }
 
-  // Strategy 1: Fetch the video page HTML and extract caption tracks
-  const captions = await getCaptionTracksFromPage(videoId);
-  if (captions && captions.length > 0) {
-    // Prefer Japanese, then any auto-generated, then first available
+  log(`videoId: ${videoId}`);
+
+  // Fetch the video page HTML to get caption information
+  log('動画ページHTMLを取得中...');
+  let html;
+  try {
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      log(`ページ取得失敗: ${res.status}`);
+      return { error: `ページ取得失敗: ${res.status}`, transcript: '', logs: debugLogs };
+    }
+    html = await res.text();
+    log(`HTML取得成功 (${html.length} bytes)`);
+  } catch (err) {
+    log(`ページ取得エラー: ${err.message}`);
+    return { error: `ページ取得エラー: ${err.message}`, transcript: '', logs: debugLogs };
+  }
+
+  // Strategy 1: Extract captionTracks directly from HTML
+  log('Strategy 1: captionTracksを抽出中...');
+  const captionResult = await tryCaptionTracks(html, log);
+  if (captionResult) {
+    log(`Strategy 1 成功: ${captionResult.length} 文字`);
+    return { transcript: captionResult, logs: debugLogs };
+  }
+
+  // Strategy 2: Innertube get_transcript API
+  log('Strategy 2: innertube APIを試行中...');
+  const innertubeResult = await tryInnertubeAPI(html, videoId, log);
+  if (innertubeResult) {
+    log(`Strategy 2 成功: ${innertubeResult.length} 文字`);
+    return { transcript: innertubeResult, logs: debugLogs };
+  }
+
+  log('全ての方法で文字起こしが取得できませんでした');
+  return {
+    error: 'この動画では文字起こしが利用できません。字幕が有効な動画でお試しください。',
+    transcript: '',
+    logs: debugLogs,
+  };
+}
+
+// ── Strategy 1: Caption Tracks from player response ──────────
+async function tryCaptionTracks(html, log) {
+  try {
+    // Find "captionTracks" in the HTML and extract the array
+    const marker = '"captionTracks":';
+    const idx = html.indexOf(marker);
+    if (idx === -1) {
+      log('captionTracks が HTML 内に見つかりません');
+      return null;
+    }
+
+    // Extract the JSON array starting from the marker
+    const start = idx + marker.length;
+    const arrayStr = extractJSONArray(html, start);
+    if (!arrayStr) {
+      log('captionTracks の JSON 配列パースに失敗');
+      return null;
+    }
+
+    const captions = JSON.parse(arrayStr);
+    log(`キャプショントラック数: ${captions.length}`);
+    captions.forEach((c, i) => {
+      log(`  [${i}] lang=${c.languageCode}, kind=${c.kind || 'manual'}, name=${c.name?.simpleText || ''}`);
+    });
+
+    // Select best track: prefer Japanese manual, then Japanese ASR, then any ASR, then first
     let track = captions.find(c => c.languageCode === 'ja' && c.kind !== 'asr');
     if (!track) track = captions.find(c => c.languageCode === 'ja');
     if (!track) track = captions.find(c => c.kind === 'asr');
     if (!track) track = captions[0];
 
-    const res = await fetch(track.baseUrl);
-    if (!res.ok) throw new Error(`字幕取得失敗: ${res.status}`);
-
-    const xml = await res.text();
-    const text = parseTranscriptXML(xml);
-    if (text.trim().length > 0) return text;
-  }
-
-  // Strategy 2: Try YouTube's innertube transcript API
-  const innertubeResult = await tryInnertubeTranscript(videoId);
-  if (innertubeResult && innertubeResult.trim().length > 0) {
-    return innertubeResult;
-  }
-
-  throw new Error('この動画では文字起こしが利用できません。字幕が有効な動画でお試しください。');
-}
-
-async function getCaptionTracksFromPage(videoId) {
-  try {
-    // Re-fetch the video page to get fresh player response data
-    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      credentials: 'include',
-    });
-    if (!res.ok) return null;
-
-    const html = await res.text();
-
-    // Extract ytInitialPlayerResponse from the HTML
-    const match = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;\s*var\s/s);
-    if (!match) {
-      // Try alternative pattern
-      const match2 = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;/s);
-      if (!match2) return null;
-      try {
-        const data = JSON.parse(match2[1]);
-        return data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
-      } catch (_) {
-        return null;
-      }
+    if (!track || !track.baseUrl) {
+      log('有効なキャプショントラックが見つかりません');
+      return null;
     }
 
-    const data = JSON.parse(match[1]);
-    return data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || null;
-  } catch (_) {
+    log(`選択トラック: lang=${track.languageCode}, kind=${track.kind || 'manual'}`);
+    log(`URL: ${track.baseUrl.substring(0, 80)}...`);
+
+    const res = await fetch(track.baseUrl);
+    if (!res.ok) {
+      log(`字幕XML取得失敗: ${res.status}`);
+      return null;
+    }
+
+    const xml = await res.text();
+    log(`字幕XMLサイズ: ${xml.length} bytes`);
+
+    const text = parseTranscriptXML(xml);
+    if (text.trim().length === 0) {
+      log('字幕XMLのパース結果が空です');
+      return null;
+    }
+
+    return text;
+  } catch (err) {
+    log(`Strategy 1 エラー: ${err.message}`);
     return null;
   }
 }
 
-async function tryInnertubeTranscript(videoId) {
+// ── Strategy 2: Innertube get_transcript API ─────────────────
+async function tryInnertubeAPI(html, videoId, log) {
   try {
-    // Use YouTube's innertube API to get the transcript
-    // First we need to get engagement panels info from the page
-    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      credentials: 'include',
-    });
-    if (!res.ok) return null;
+    // Extract INNERTUBE_API_KEY
+    const keyMatch = html.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
+    if (!keyMatch) {
+      log('INNERTUBE_API_KEY が見つかりません');
+      return null;
+    }
+    const apiKey = keyMatch[1];
+    log(`INNERTUBE_API_KEY: ${apiKey}`);
 
-    const html = await res.text();
+    // Extract client version
+    const versionMatch = html.match(/"INNERTUBE_CLIENT_VERSION"\s*:\s*"([^"]+)"/);
+    const clientVersion = versionMatch ? versionMatch[1] : '2.20240101.00.00';
+    log(`clientVersion: ${clientVersion}`);
 
-    // Extract the serialized share entity for transcript
-    // Look for the transcript params in ytInitialData
-    const dataMatch = html.match(/ytInitialData\s*=\s*(\{.+?\})\s*;\s*(?:var\s|<\/script>)/s);
-    if (!dataMatch) return null;
+    // Find transcript params from engagement panels in ytInitialData
+    // Look for the serialized params
+    const paramsMatch = html.match(/"serializedShareEntity"\s*:\s*"([^"]+)".*?"getTranscriptEndpoint"\s*:\s*\{[^}]*"params"\s*:\s*"([^"]+)"/s);
+    let transcriptParams = null;
 
-    const initialData = JSON.parse(dataMatch[1]);
+    if (paramsMatch) {
+      transcriptParams = paramsMatch[2];
+    } else {
+      // Alternative: search for getTranscriptEndpoint params directly
+      const altMatch = html.match(/"getTranscriptEndpoint"\s*:\s*\{[^}]*"params"\s*:\s*"([^"]+)"/);
+      if (altMatch) {
+        transcriptParams = altMatch[1];
+      }
+    }
 
-    // Find transcript panel params
-    const params = findTranscriptParams(initialData);
-    if (!params) return null;
+    if (!transcriptParams) {
+      log('get_transcript params が見つかりません');
+      return null;
+    }
 
-    // Call the innertube get_transcript endpoint
-    const apiKey = extractApiKey(html);
-    if (!apiKey) return null;
+    log(`transcript params: ${transcriptParams.substring(0, 40)}...`);
 
-    const transcriptRes = await fetch(
+    const res = await fetch(
       `https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}`,
       {
         method: 'POST',
@@ -109,98 +173,162 @@ async function tryInnertubeTranscript(videoId) {
           context: {
             client: {
               clientName: 'WEB',
-              clientVersion: '2.20240101.00.00',
+              clientVersion: clientVersion,
             },
           },
-          params,
+          params: transcriptParams,
         }),
       }
     );
 
-    if (!transcriptRes.ok) return null;
+    if (!res.ok) {
+      log(`innertube API 失敗: ${res.status}`);
+      return null;
+    }
 
-    const transcriptData = await transcriptRes.json();
-    return parseInnertubeTranscript(transcriptData);
-  } catch (_) {
+    const data = await res.json();
+    log(`innertube レスポンス受信`);
+
+    // Parse transcript from the response
+    const text = parseInnertubeTranscript(data, log);
+    if (!text || text.trim().length === 0) {
+      log('innertube transcript のパース結果が空です');
+      return null;
+    }
+
+    return text;
+  } catch (err) {
+    log(`Strategy 2 エラー: ${err.message}`);
     return null;
   }
 }
 
-function findTranscriptParams(initialData) {
-  // Search through engagement panels for transcript
-  try {
-    const panels = initialData?.engagementPanels || [];
-    for (const panel of panels) {
-      const content = panel?.engagementPanelSectionListRenderer?.content;
-      const transcript = content?.continuationItemRenderer?.continuationEndpoint
-        ?.getTranscriptEndpoint?.params;
-      if (transcript) return transcript;
+// ── JSON Array extraction ────────────────────────────────────
+function extractJSONArray(str, startIndex) {
+  if (str[startIndex] !== '[') return null;
 
-      // Alternative path
-      const structured = content?.structuredDescriptionContentRenderer?.items;
-      if (structured) {
-        for (const item of structured) {
-          const ep = item?.videoDescriptionTranscriptSectionRenderer
-            ?.subHeaderRenderer?.transcriptSubHeaderRenderer
-            ?.openTranscriptButton?.buttonRenderer?.command
-            ?.getTranscriptEndpoint?.params;
-          if (ep) return ep;
-        }
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIndex; i < str.length; i++) {
+    const ch = str[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) {
+        return str.substring(startIndex, i + 1);
       }
     }
-  } catch (_) {
-    // ignore
   }
+
   return null;
 }
 
-function extractApiKey(html) {
-  const match = html.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
-  return match ? match[1] : null;
-}
-
-function parseInnertubeTranscript(data) {
+// ── Innertube transcript parser ──────────────────────────────
+function parseInnertubeTranscript(data, log) {
   try {
-    const body = data?.actions?.[0]?.updateEngagementPanelAction
-      ?.content?.transcriptRenderer?.body?.transcriptBodyRenderer;
-    if (!body) return null;
-
-    const segments = body.cueGroups || [];
-    const lines = [];
-    for (const group of segments) {
-      const cues = group?.transcriptCueGroupRenderer?.cues || [];
-      for (const cue of cues) {
-        const text = cue?.transcriptCueRenderer?.cue?.simpleText;
-        if (text) lines.push(text.trim());
+    // Try multiple response structures
+    const actions = data?.actions;
+    if (actions) {
+      for (const action of actions) {
+        const panel = action?.updateEngagementPanelAction?.content
+          ?.transcriptRenderer?.body?.transcriptBodyRenderer;
+        if (panel) {
+          const segments = panel.cueGroups || [];
+          log(`innertube cueGroups数: ${segments.length}`);
+          const lines = [];
+          for (const group of segments) {
+            const cues = group?.transcriptCueGroupRenderer?.cues || [];
+            for (const cue of cues) {
+              const text = cue?.transcriptCueRenderer?.cue?.simpleText;
+              if (text) lines.push(text.trim());
+            }
+          }
+          if (lines.length > 0) return lines.join('\n');
+        }
       }
     }
-    return lines.filter(l => l.length > 0).join('\n');
-  } catch (_) {
+
+    // Alternative structure
+    const body = data?.body?.transcriptBodyRenderer;
+    if (body) {
+      const segments = body.cueGroups || [];
+      const lines = [];
+      for (const group of segments) {
+        const cues = group?.transcriptCueGroupRenderer?.cues || [];
+        for (const cue of cues) {
+          const text = cue?.transcriptCueRenderer?.cue?.simpleText;
+          if (text) lines.push(text.trim());
+        }
+      }
+      if (lines.length > 0) return lines.join('\n');
+    }
+
+    log('innertube レスポンスに認識可能な構造がありません');
+    log(`レスポンスキー: ${JSON.stringify(Object.keys(data || {}))}`);
+    return null;
+  } catch (err) {
+    log(`innertube パースエラー: ${err.message}`);
     return null;
   }
 }
 
+// ── XML transcript parser ────────────────────────────────────
 function parseTranscriptXML(xml) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xml, 'text/xml');
-  const texts = doc.querySelectorAll('text');
 
-  if (texts.length === 0) {
-    // Try body > p format (srv3)
-    const paragraphs = doc.querySelectorAll('body > p');
-    if (paragraphs.length > 0) {
-      return Array.from(paragraphs)
-        .map(p => decodeHTMLEntities(p.textContent.trim()))
-        .filter(t => t.length > 0)
-        .join('\n');
-    }
+  // Check for parse error
+  const parseError = doc.querySelector('parsererror');
+  if (parseError) {
     return '';
   }
 
-  return Array.from(texts)
-    .map(t => decodeHTMLEntities(t.textContent.trim()))
-    .filter(t => t.length > 0)
-    .join('\n');
+  // Standard format: <text> elements
+  const texts = doc.querySelectorAll('text');
+  if (texts.length > 0) {
+    return Array.from(texts)
+      .map(t => decodeHTMLEntities(t.textContent.trim()))
+      .filter(t => t.length > 0)
+      .join('\n');
+  }
+
+  // SRV3 format: <body><p> elements
+  const paragraphs = doc.querySelectorAll('p');
+  if (paragraphs.length > 0) {
+    return Array.from(paragraphs)
+      .map(p => {
+        // <p> may contain <s> sub-elements
+        const subs = p.querySelectorAll('s');
+        if (subs.length > 0) {
+          return Array.from(subs).map(s => s.textContent.trim()).join(' ');
+        }
+        return p.textContent.trim();
+      })
+      .filter(t => t.length > 0)
+      .join('\n');
+  }
+
+  return '';
 }
 
 function decodeHTMLEntities(text) {

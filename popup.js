@@ -143,12 +143,23 @@ async function startSummarize(tab, config) {
     let transcript;
     try {
       const response = await chrome.tabs.sendMessage(tab.id, { action: 'getTranscript' });
+
+      // Show debug logs from content script
+      if (response && response.logs && response.logs.length > 0) {
+        response.logs.forEach(msg => addLog(`[content] ${msg}`));
+      }
+
       if (response && response.error) {
+        addLog(`文字起こし取得エラー: ${response.error}`, 'error');
         throw new Error(response.error);
       }
       transcript = response.transcript;
       addLog(`文字起こし取得成功 (${transcript.length} 文字)`, 'success');
     } catch (err) {
+      if (err.message && !err.message.includes('Could not establish connection')) {
+        // Re-throw content script errors as-is
+        throw err;
+      }
       addLog(`文字起こし取得エラー: ${err.message}`, 'error');
       throw new Error('文字起こしの取得に失敗しました。ページをリロードしてから再度お試しください。');
     }
